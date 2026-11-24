@@ -12,6 +12,8 @@ from hyve.tools.forecast_crps.errors import (
     CoordinateMismatchError,
     DimensionMismatchError,
     GridMismatchError,
+    InputContractError,
+    MissingDataError,
     StationMismatchError,
 )
 from hyve.tools.forecast_crps.matching import (
@@ -30,6 +32,8 @@ __all__ = [
     "CoordinateMismatchError",
     "DimensionMismatchError",
     "GridMismatchError",
+    "InputContractError",
+    "MissingDataError",
     "StationMismatchError",
     "check_same_station_kind",
     "common_coords",

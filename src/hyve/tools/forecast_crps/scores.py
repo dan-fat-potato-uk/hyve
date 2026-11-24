@@ -16,7 +16,11 @@ import pandas as pd
 import xarray as xr
 
 from hyve.tools.forecast_crps.chunks import chunk_spatially
-from hyve.tools.forecast_crps.crps import forecast_crps, persistence_crps
+from hyve.tools.forecast_crps.crps import (
+    forecast_crps,
+    persistence_crps,
+    require_variable,
+)
 from hyve.tools.forecast_crps.matching import (
     check_covers_reference,
     match_coords,
@@ -88,13 +92,15 @@ def compute_score(
     with_init=False,
     coord_tolerance=None,
     chunk_size=None,
+    variable="dis",
 ):
     """Score every reforecast file against the reanalysis and write the results.
 
     The latest reforecast file defines the reference grid: the reanalysis and
     the other files are matched to it (see `match_coords`) and carry its
     coordinate values, so all scores align by label. `ds_clim`, if given,
-    must already be on that grid.
+    must already be on that grid. `variable` is the variable scored in the
+    reforecast files.
     """
 
     log.info("\nComputing crps and crpss\n")
@@ -109,7 +115,7 @@ def compute_score(
     ds_reanalysis = relabel(ds_reanalysis, matches, ds_ref).transpose(
         "time", *spatial_dims
     )
-    da_ref = narrow(ds_ref, matches)["dis"].sel(ensemble=0)
+    da_ref = narrow(ds_ref, matches)[variable].sel(ensemble=0)
     da_ref = da_ref.transpose("time", *spatial_dims)
     ref_coords = {dim: da_ref[dim].values for dim in spatial_dims}
 
@@ -136,6 +142,7 @@ def compute_score(
         ds_reforecast = chunk_spatially(
             xr.open_dataset(reforecast_path), spatial_dims, chunk_size
         )
+        require_variable(ds_reforecast, variable, file_name)
 
         # the reanalysis already carries the reference values: match the file
         # to them, and require that it covers every reference point
@@ -163,7 +170,7 @@ def compute_score(
         )
         log.info(f"Persistence date is {date_persistence:%Y-%m-%d %H}h")
 
-        reforecast = ds_reforecast["dis"].sel(time=date_range)
+        reforecast = ds_reforecast[variable].sel(time=date_range)
         reforecast = reforecast.transpose("time", "ensemble", *spatial_dims)
         # points the reforecast has data for; others are never scored
         scored = reforecast.isel(time=0, ensemble=0, drop=True).notnull()

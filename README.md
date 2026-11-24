@@ -60,8 +60,8 @@ pytest
 
 ### `hyve-forecast-crps`
 
-The variable `dis` of each input has exactly these dimensions (any order). The
-spatial dimensions are chosen with `--spatial_dims` (default `station`, for
+The variable `dis` (or the one set with `--variable`) of each input has exactly
+these dimensions (any order). The spatial dimensions are chosen with `--spatial_dims` (default `station`, for
 example `lat lon` or `y x`) or `--core_dim` for a single one.
 
 | Input        | `dis` dimensions                                  |
@@ -96,6 +96,144 @@ float32 files): 51 members, 40 steps and 5,000 points make 82 MB, so 4 threads
 need about 2.6 GB on top of the outputs. The scores do not depend on
 the chunk size. `--scheduler synchronous` runs everything in one thread, for
 debugging.
+
+### `hyve-forecast-crps`: configuration file
+
+The settings can also come from a YAML file given with `--config`; flags of
+the same name override it. Its `structure` key names the input structure, and
+the command must match it: `reforecast` (the default without a subcommand) is
+scored without a subcommand, `medium_range` with the `score` and `aggregate`
+subcommands below. A mismatch, or a key that does not apply to the structure,
+is an error.
+
+```yaml
+structure: reforecast         # default without a subcommand
+variable: dis                 # in the reanalysis and reforecast files
+spatial_dims: [point]         # default: [station]
+coord_tolerance: 1.0e-6       # optional, for float coordinates
+chunk_size: 5000              # optional, see the memory section
+threads: 4                    # optional
+scheduler: threads            # or synchronous
+with_init: false              # as --with_init
+climatology: climatology.nc   # optional benchmark
+```
+
+```shell
+hyve-forecast-crps --config reforecast.yaml \
+    --reanalysis reanalysis.nc --reforecast forecasts/ --output scores/
+```
+
+### `hyve-forecast-crps`: medium-range forecasts
+
+Medium-range forecasts have one forecast per start date. They are scored in two
+steps: `score` computes the CRPS of each forecast per lead time, as soon as the
+reanalysis covers its longest lead time, and `aggregate` averages those scores
+over a window of dates, such as a month.
+
+```shell
+hyve-forecast-crps score --config medium_range.yaml \
+    --forecast forecasts/2025100100.nc --reanalysis reanalysis.nc --output scores/
+hyve-forecast-crps aggregate --config medium_range.yaml \
+    --scores scores/ --start 2025-10-01 --end 2025-10-31 --output crps_202510.nc
+```
+
+Without a subcommand, `hyve-forecast-crps` scores reforecasts as described above.
+
+The configuration file holds the settings shared by both steps. Every key is
+optional; flags of the same name override the file. A step ignores the keys
+marked for the other one; `aggregate` also ignores `coord_tolerance`, since
+every score file of a window must be on the same grid.
+
+```yaml
+structure: medium_range       # the default for score and aggregate
+variable: dis                 # in the forecast, reanalysis and climatology
+spatial_dims: [point]         # default: [station]
+lead_time_dim: step           # or time (the default), see below; for score
+ensemble_dim: number          # default: ensemble; for score
+coord_tolerance: 1.0e-6       # optional, for float coordinates
+chunk_size: 5000              # optional, see the memory section
+threads: 4                    # optional
+scheduler: threads            # or synchronous
+climatology: climatology.nc   # optional benchmark, for score
+aggregation:                  # for aggregate
+  by: valid_time              # or start_time
+  min_count: 1                # cells with fewer samples are NaN
+  start_frequency: 1D         # time between start times: 1D, 12h, 6h, ...
+  allow_missing: false        # true: aggregate despite missing start times
+```
+
+Inputs of `score`:
+
+| Input       | `variable` dimensions                            | Also required |
+| ----------- | ------------------------------------------------ | ------------- |
+| Forecast    | *ensemble dim*, *lead-time dim*, *spatial dims*  | scalar coordinate `forecast_reference_time` (the start time) |
+| Reanalysis  | `time`, *spatial dims*                           | |
+| Climatology | *ensemble dim*, `doy`, `issue_hour`, *spatial dims* | as written by `hyve-clim-benchmark` |
+
+The ensemble dimension is `ensemble_dim` (`ensemble` by default, `number` in
+GRIB-derived files). The lead-time dimension depends on `lead_time_dim`:
+
+- `time` (default): `time` holds the valid times.
+- `step`: `step` holds the lead times (time differences) from
+  `forecast_reference_time`, as cfgrib and earthkit write them. The valid time
+  is `forecast_reference_time + step`; a `valid_time` coordinate, if present,
+  is ignored.
+
+Forecast values are taken as instantaneous at their valid time and verified
+against the reanalysis at that time. Every valid time must therefore be a
+reanalysis time: a forecast with 3-hourly steps against a 6-hourly reanalysis
+fails, naming the unmatched times, so select the 6-hourly steps first (with
+`lead_time_dim: step`, for example
+`ds.sel(step=ds.step % np.timedelta64(6, "h") == np.timedelta64(0, "h"))`).
+
+`--forecast` is one file or a folder of them. Each forecast file gives one
+`scores_YYYYMMDDHH.nc` (named by its start time) with `crps_forecast`,
+`crps_persistence` and, with a climatology, `crps_climatology`, in float32 on
+(`step`, *spatial dims*), with the coordinates `valid_time(step)` and
+`forecast_reference_time`.
+
+- Step 0 (the initial condition) is not scored.
+- Persistence is the reanalysis at the start time.
+- The climatology is taken for each valid time: the day of year of the valid
+  date, and the `issue_hour` slot holding the valid hour (the largest one not
+  after it), so a daily climatology (`issue_hour` 0 only) serves 6-hourly steps.
+  The climatology must cover every forecast point.
+- The forecast grid is the reference, as for reforecasts. Missing data gives NaN
+  in that cell only; a point without forecast data is NaN in every score. The
+  step fails only if the reanalysis has no value at any scored point for a
+  valid time, or for the start time.
+
+`aggregate` reads the `scores_*.nc` files of a folder and keeps the samples
+(start date, step) whose valid time, or start time with `by: start_time`, falls
+on a date from `--start` to `--end`, both included. The window follows calendar
+dates: a value valid at 1 November 00 UTC counts in November. For a monthly
+window by valid time, the folder must hold the scores of the forecasts started
+up to the longest lead time before the month.
+
+The window must be complete: every start time on the `start_frequency` grid
+(from 00 UTC) that has a sample in the window needs its score file. By valid
+time these run from the window start minus the longest lead time to the window
+end minus the shortest one, taking the lead times from the score files. A
+missing start time is an error naming it; with `allow_missing: true`
+(`--allow_missing`, or `--no-allow_missing` to override the file) it is a warning and the means use the files present. The
+output records `expected_start_times` and `missing_start_times` as attributes.
+Score files of extra start times, off the grid, are used as well. Two score
+files with the same start time are an error, so a rerun saved under another
+name is not counted twice.
+
+Each cell is averaged over the
+samples where every score is finite, so forecast and benchmarks always share
+the same samples. The output file has, on (`step`, *spatial dims*):
+
+| Variable            | Meaning |
+| ------------------- | ------- |
+| `crps_forecast`, `crps_persistence`, `crps_climatology` | mean CRPS |
+| `crpss_persistence`, `crpss_climatology` | `1 - crps_forecast / benchmark`, NaN where the benchmark is 0 |
+| `count`             | number of samples in each mean |
+
+Cells with fewer than `min_count` samples are NaN. Every score file of a window
+must be on the same grid. Both steps write each file atomically, so a failed
+write leaves no partial file and keeps any earlier file of that name.
 
 ## Troubleshooting
 

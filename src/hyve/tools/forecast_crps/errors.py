@@ -33,3 +33,19 @@ class DimensionMismatchError(CoordinateMismatchError):
 def mismatch_error_class(dim):
     """Error class for a mismatch along `dim`: station IDs or a grid dimension."""
     return StationMismatchError if dim == "station" else GridMismatchError
+
+
+class InputContractError(ValueError):
+    """An input does not follow the layout the tool expects.
+
+    For example a medium-range forecast without ``forecast_reference_time``,
+    or a climatology without an ``issue_hour`` slot for a valid time.
+    """
+
+
+class MissingDataError(ValueError):
+    """Data needed for a score is missing.
+
+    For example the reanalysis has no value at all for a lead time, or no
+    per-start-date score file falls in an aggregation window.
+    """

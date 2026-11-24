@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 from earthkit.meteo.score.array import crps as ensemble_crps
 
-from hyve.tools.forecast_crps.errors import DimensionMismatchError
+from hyve.tools.forecast_crps.errors import DimensionMismatchError, InputContractError
 
 
 def check_dims(obj, name, required, optional=(), hint=""):
@@ -40,6 +40,16 @@ def check_dims(obj, name, required, optional=(), hint=""):
             name, " and ".join(problems), list(obj.dims), allowed, hint
         )
     )
+
+
+def require_variable(ds, variable, name):
+    """Raise InputContractError unless `ds` holds `variable`."""
+    if variable not in ds.data_vars:
+        raise InputContractError(
+            f"{name} has no variable {variable!r} (its variables are"
+            f" {list(ds.data_vars)}). Set --variable or 'variable' in the"
+            " configuration"
+        )
 
 
 def _crps_over_last_axis(x, y):
